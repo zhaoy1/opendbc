@@ -47,6 +47,7 @@ class CarInterface(CarInterfaceBase):
       stock_cp.alphaLongitudinalAvailable = True
 
     stock_cp.alphaLongitudinalAvailable = True
+    ret.flags |= RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE.value
 
     if alpha_long and stock_cp.alphaLongitudinalAvailable:
       stock_cp.openpilotLongitudinalControl = True
