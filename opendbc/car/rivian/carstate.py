@@ -54,11 +54,13 @@ class CarState(CarStateBase, CarStateExt):
 
     ret.cruiseState.enabled = cp_cam.vl["ACM_Status"]["ACM_FeatureStatus"] == 1
     if not ret.cruiseState.enabled:
-      speed = max(min(int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"]), 85), cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"])
-      ret.cruiseState.speed = speed * conversion
+      speed = max(min(int(cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"]), 140 if cp_adas.vl["Cluster"]["Cluster_Unit"] == 0 else 85), int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"]))
+      self.last_speed = speed if speed != 0 else self.last_speed
      
     if ret.cruiseState.enabled and ret.gasPressed:
-        ret.cruiseState.speed = ret.vEgoCluster
+      self.last_speed = cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"]
+
+    ret.cruiseState.speed = self.last_speed * conversion
 
     # TODO: find cruise set speed on CAN
     # ret.cruiseState.speed = self.last_speed * CV.MPH_TO_MS  # detected speed limit
