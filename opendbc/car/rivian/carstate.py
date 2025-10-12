@@ -4,16 +4,16 @@ from opendbc.car import Bus, structs
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.rivian.values import DBC, GEAR_MAP
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.sunnypilot.car.rivian.carstate_ext import CarStateExt
+# from opendbc.sunnypilot.car.rivian.carstate_ext import CarStateExt
 
 GearShifter = structs.CarState.GearShifter
 
 
-class CarState(CarStateBase, CarStateExt):
+class CarState(CarStateBase): #, CarStateExt):
   def __init__(self, CP, CP_SP):
     CarStateBase.__init__(self, CP, CP_SP)
-    CarStateExt.__init__(self, CP, CP_SP)
-    self.last_speed = 30
+    # CarStateExt.__init__(self, CP, CP_SP)
+    self.last_speed = 20
 
     self.acm_lka_hba_cmd = None
     self.sccm_wheel_touch = None
@@ -49,38 +49,48 @@ class CarState(CarStateBase, CarStateExt):
     ret.steerFaultTemporary = cp.vl["EPAS_AdasStatus"]["EPAS_EacErrorCode"] != 0
 
     # Cruise state
-    # speed = min(int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"]), 85)
-    # self.last_speed = speed if speed != 0 else self.last_speed
-
     ret.cruiseState.enabled = cp_cam.vl["ACM_Status"]["ACM_FeatureStatus"] == 1
+
+    # Read the speed limit from TSR (traffic sign recognition)
+    tsr_speed = int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"])
+
+    # --- Adjust speed limit values if needed ---
+    speed_adjust_map = {
+      35: 40,
+      60: 68,
+      70: 78,
+      100: 110
+    }
+
+    # Apply mapping or keep as-is if not listed
+    adjusted_tsr_speed = speed_adjust_map.get(tsr_speed, tsr_speed)
+
     if not ret.cruiseState.enabled:
-      speed = max(min(int(cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"]), 140 if cp_adas.vl["Cluster"]["Cluster_Unit"] == 0 else 85), int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"]))
-      self.last_speed = speed if speed != 0 else self.last_speed
-     
-    if ret.cruiseState.enabled and ret.gasPressed:
-      self.last_speed = cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"]
+      self.last_speed = max(
+        adjusted_tsr_speed,
+        int(cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"])
+      )
+    elif ret.gasPressed:
+      cluster_speed = cp_adas.vl["Cluster"]["Cluster_VehicleSpeed"]
+      self.last_speed = cluster_speed if cluster_speed > self.last_speed else self.last_speed
 
-    ret.cruiseState.speed = self.last_speed * conversion
-
-    # TODO: find cruise set speed on CAN
-    # ret.cruiseState.speed = self.last_speed * CV.MPH_TO_MS  # detected speed limit
+    ret.cruiseState.speed = max(
+      20 * CV.MPH_TO_MS,
+      min(self.last_speed * conversion, 85 * CV.MPH_TO_MS)
+    )
 
     if not self.CP.openpilotLongitudinalControl:
       ret.cruiseState.speed = -1
     ret.cruiseState.available = True  # cp.vl["VDM_AdasSts"]["VDM_AdasInterfaceStatus"] == 1
     ret.cruiseState.standstill = cp.vl["VDM_AdasSts"]["VDM_AdasVehicleHoldStatus"] == 1
 
-    # ACM_Status->ACM_FaultSupervisorState normally 1, appears to go to 3 when either:
-    # 1. car in park/not in drive (normal)
-    # 2. something (message from another ECU) ACM relies on is faulty
-    #  * ACM_FaultStatus will stay 0 since ACM itself isn't faulted
-    # TODO: ACM_FaultStatus hasn't been seen high yet, but log anyway
+    # TODO: log ACM_Unkown2=3 as a fault. need to filter it at the start and end of routes though
+    # ACM_FaultStatus hasn't been seen yet
     ret.accFaulted = (cp_cam.vl["ACM_Status"]["ACM_FaultStatus"] == 1 or
                       # VDM_AdasFaultStatus=Brk_Intv is the default for some reason
+                      # VDM_AdasFaultStatus=Imps_Cmd was seen when sending it rapidly changing ACC enable commands
                       # VDM_AdasFaultStatus=Cntr_Fault isn't fully understood, but we've seen it in the wild
-                      # VDM_AdasFaultStatus=Imps_Cmd was seen when sending it rapidly changing ACC enable commands, or when ACC command drops out
-                      cp.vl["VDM_AdasSts"]["VDM_AdasFaultStatus"] in (2, 3))  # 2=Cntr_Fault, 3=Imps_Cmd
-
+                      cp.vl["VDM_AdasSts"]["VDM_AdasFaultStatus"] in (3,))  # 3=Imps_Cmd
     # Gear
     ret.gearShifter = GEAR_MAP.get(int(cp.vl["VDM_PropStatus"]["VDM_Prndl_Status"]), GearShifter.unknown)
 
@@ -106,7 +116,7 @@ class CarState(CarStateBase, CarStateExt):
     self.sccm_wheel_touch = copy.copy(cp.vl["SCCM_WheelTouch"])
     self.vdm_adas_status = copy.copy(cp.vl["VDM_AdasSts"])
 
-    CarStateExt.update(self, ret, can_parsers)
+    # CarStateExt.update(self, ret, can_parsers)
 
     return ret, ret_sp
 
@@ -116,5 +126,5 @@ class CarState(CarStateBase, CarStateExt):
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 0),
       Bus.adas: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 1),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 2),
-      **CarStateExt.get_parser(CP, CP_SP),
+      # **CarStateExt.get_parser(CP, CP_SP),
     }
