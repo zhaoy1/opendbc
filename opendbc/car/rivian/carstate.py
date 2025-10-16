@@ -5,6 +5,8 @@ from opendbc.car.interfaces import CarStateBase
 from opendbc.car.rivian.values import DBC, GEAR_MAP
 from opendbc.car.common.conversions import Conversions as CV
 from openpilot.common.params import Params
+import selfdrive.messaging as messaging
+
 # from opendbc.sunnypilot.car.rivian.carstate_ext import CarStateExt
 
 GearShifter = structs.CarState.GearShifter
@@ -19,6 +21,10 @@ class CarState(CarStateBase): #, CarStateExt):
     self.acm_lka_hba_cmd = None
     self.sccm_wheel_touch = None
     self.vdm_adas_status = None
+
+    # create SubMaster (if not already created in this module)
+    self.sm = messaging.SubMaster(['liveMapData', 'carState'])  # add other channels you already use
+
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -52,17 +58,34 @@ class CarState(CarStateBase): #, CarStateExt):
     # Cruise state
     ret.cruiseState.enabled = cp_cam.vl["ACM_Status"]["ACM_FeatureStatus"] == 1
 
-    # --- read parameter and button action ---
-    params = Params()
-    use_tsr = params.get_bool("UseTSRAsCruiseSpeed")
+    # Live Map data: check that the message is present and contains a valid speed limit
+    # field names vary slightly across forks/versions; try the common ones below
+    self.sm.update()
+    lmd = self.sm['liveMapData']
+    speed_limit = 0
+    speed_limit_valid = False
 
-    try:
-      delta = int(params.get("CruiseSpeedDelta") or b"0")
-    except Exception:
-      delta = 0
+    # common field names you might see:
+    # lmd.speedLimit (int, usually km/h) and lmd.speedLimitValid (bool)
+    # or lmd.speedLimitKm/h etc. — use getattr() to be robust
+
+    if lmd.valid:  # top-level validity flag for the message
+      # try common attributes safely
+      if hasattr(lmd, 'speedLimit') and lmd.speedLimit > 0:
+        speed_limit = lmd.speedLimit
+        # many implementations also have a boolean flag:
+        speed_limit_valid = getattr(lmd, 'speedLimitValid', True)
+      else:
+        # try alternative name(s) if present
+        speed_limit = getattr(lmd, 'speed_limit', None) or getattr(lmd, 'speedLimitKph', None)
+        if speed_limit is not None:
+          speed_limit_valid = True
 
     # --- read and adjust TSR speed ---
-    tsr_speed = int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"])
+    #tsr_speed = int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"])
+
+    # Apply mapping or keep as-is if not listed
+    # adjusted_tsr_speed = speed_adjust_map.get(tsr_speed, tsr_speed)
     speed_adjust_map = {
       35: 42,
       40: 46,
@@ -71,8 +94,16 @@ class CarState(CarStateBase): #, CarStateExt):
       100: 110
     }
 
-    # Apply mapping or keep as-is if not listed
-    adjusted_tsr_speed = speed_adjust_map.get(tsr_speed, tsr_speed)
+    adjusted_tsr_speed = speed_adjust_map.get(speed_limit, speed_limit)
+
+    # --- read parameter and button action ---
+    params = Params()
+    use_tsr = params.get_bool("UseTSRAsCruiseSpeed")
+
+    try:
+      delta = int(params.get("CruiseSpeedDelta") or b"0")
+    except Exception:
+      delta = 0
 
     # --- determine base speed ---
     if not ret.cruiseState.enabled:
